@@ -8,6 +8,7 @@ import "C"
 import (
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"unsafe"
 )
 
@@ -92,13 +93,16 @@ func (uuid CharacteristicUuid) String() string {
 }
 
 func NewCharacteristicUuidFromString(uuid string) (CharacteristicUuid, error) {
-	if len(uuid) != 32 {
+	if len(uuid) != 32 && len(uuid) != 36 {
 		return CharacteristicUuid{}, fmt.Errorf(
-			"Use XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (32 characters) format",
+			"Use XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX (32 characters) or " +
+				"XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX format",
 		)
+	} else if strings.Contains(uuid, "-") && len(uuid) != 36 {
+		return CharacteristicUuid{}, fmt.Errorf("Use XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX format")
 	}
 
-	byteAddr, err := hex.DecodeString(uuid)
+	byteAddr, err := hex.DecodeString(strings.ReplaceAll(uuid, "-", ""))
 	if err != nil {
 		return CharacteristicUuid{}, err
 	}
