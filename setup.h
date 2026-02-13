@@ -3,8 +3,8 @@
 
 #include <kindlebt/kindlebt.h>
 
-extern sessionHandle gokindlebt_session;
-extern bleConnHandle gokindlebt_conn;
-extern bleGattsService_t gokindlebt_gatt_db;
+sessionHandle newSessionHandle(void);
+bleConnHandle newBleConnHandle(void);
+bleGattsService_t* newBleGattsService(void);
 
 #endif // GOKINDLEBT_SETUP_H

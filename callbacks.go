@@ -10,6 +10,27 @@ import (
 	"log/slog"
 )
 
+type getDbCallback struct {
+	conn    C.bleConnHandle
+	service *C.bleGattsService_t
+	noSvc   C.uint32_t
+}
+
+//export goOnBleGattcGetDbCallback
+func goOnBleGattcGetDbCallback(
+	connHandle C.bleConnHandle, service *C.bleGattsService_t, noSvc C.uint32_t,
+) {
+	chAny, loaded := pendingDbs.LoadAndDelete(connHandle)
+
+	if loaded == false {
+		slog.Warn("No dbs channel registered, this shouldn't happen")
+		return
+	}
+
+	ch := chAny.(chan getDbCallback)
+	ch <- getDbCallback{conn: connHandle, service: service, noSvc: noSvc}
+}
+
 type readCharacteristicCallback struct {
 	conn   C.bleConnHandle
 	value  C.bleGattCharacteristicsValue_t

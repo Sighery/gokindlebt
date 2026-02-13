@@ -22,4 +22,5 @@ var (
 	pendingReads         sync.Map
 	pendingWrites        sync.Map
 	pendingNotifications sync.Map
+	pendingDbs           sync.Map
 )

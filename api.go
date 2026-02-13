@@ -8,6 +8,7 @@ package gokindlebt
 
 #include "callbacks.h"
 #include "setup.h"
+#include "utils.h"
 */
 import "C"
 
@@ -24,7 +25,7 @@ type api interface {
 	EnableRadio(session Session) error
 	DisableRadio(session Session) error
 	OpenSession(sessionType int) (Session, error)
-	CloseSession() (Session, error)
+	CloseSession(session Session) (Session, error)
 	RegisterBle(session Session) error
 	DeregisterBle(session Session) error
 	RegisterGattClient(session Session) error
@@ -36,21 +37,23 @@ type api interface {
 	DisconnectBle(conn BleConnection) error
 	DiscoverServices(session Session, conn BleConnection) error
 	RetrieveGattDatabase(conn BleConnection) (GattService, error)
-	ReadCharacteristic(session Session, conn BleConnection, uuid CharacteristicUuid) error
+	ReadCharacteristic(
+		session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
+	) error
 	writeCharacteristic(
-		session Session, conn BleConnection, uuid CharacteristicUuid,
+		session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 		value CharacteristicValueKind, responseRequired C.responseType_t,
 	) (CharacteristicValue, error)
 	WriteCharacteristicWithoutResponse(
-		session Session, conn BleConnection, uuid CharacteristicUuid,
+		session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 		value CharacteristicValueKind,
 	) error
 	WriteCharacteristicWithResponse(
-		session Session, conn BleConnection, uuid CharacteristicUuid,
+		session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 		value CharacteristicValueKind,
 	) (CharacteristicValue, error)
 	NotifyCharacteristic(
-		session Session, conn BleConnection, uuid CharacteristicUuid,
+		session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 	) (*Notification, error)
 }
 
@@ -88,7 +91,10 @@ func (a *Adapter) DisableRadio(session Session) error {
 }
 
 func (a *Adapter) OpenSession(sessionType SessionType) (Session, error) {
-	session := Session{ptr: &C.gokindlebt_session}
+	session, err := NewSession()
+	if err != nil {
+		return Session{}, err
+	}
 
 	status := C.openSession((C.sessionType_t)(sessionType), session.ptr)
 	if status != C.ACE_STATUS_OK {
@@ -103,6 +109,8 @@ func (a *Adapter) CloseSession(session Session) error {
 	if status != C.ACE_STATUS_OK {
 		return fmt.Errorf("Couldn't close session, error: %d\n", status)
 	}
+
+	session.Close()
 
 	return nil
 }
@@ -148,7 +156,10 @@ func (a *Adapter) DeregisterGattClient(session Session) error {
 func (a *Adapter) ConnectBle(
 	session Session, addr Address, param ConnParameter, role ConnRole, priority ConnPriority,
 ) (BleConnection, error) {
-	conn := BleConnection{ptr: &C.gokindlebt_conn}
+	conn, err := NewBleConnection()
+	if err != nil {
+		return BleConnection{}, err
+	}
 
 	cAddr := addr.cAddr()
 
@@ -179,6 +190,8 @@ func (a *Adapter) DisconnectBle(conn BleConnection) error {
 		return fmt.Errorf("Failed to disconnect from BLE device, error %d\n", status)
 	}
 
+	conn.Close()
+
 	return nil
 }
 
@@ -192,22 +205,42 @@ func (a *Adapter) DiscoverServices(session Session, conn BleConnection) error {
 }
 
 func (a *Adapter) RetrieveGattDatabase(conn BleConnection) (GattService, error) {
-	service := GattService{ptr: &C.gokindlebt_gatt_db}
+	service, err := NewGattService()
+	if err != nil {
+		return GattService{}, err
+	}
+
+	ch := make(chan getDbCallback, 1)
+	pendingDbs.Store(*conn.ptr, ch)
 
 	status := C.bleGetDatabase(*conn.ptr, service.ptr)
 	if status != C.ACE_STATUS_OK {
+		pendingDbs.Delete(*conn.ptr)
 		return GattService{}, fmt.Errorf(
 			"Failed to retrieve GATT database from BLE device, error %d\n", status,
 		)
 	}
 
-	return service, nil
+	select {
+	case res := <-ch:
+		status = C.bleCloneGattService(&service.ptr, res.service, C.int(int(res.noSvc)))
+		if status != C.ACE_STATUS_OK {
+			return GattService{}, fmt.Errorf("Failed to copy the GATT DB, error: %d", status)
+		}
+		service.noSvc = uint(res.noSvc)
+
+		return service, nil
+	case <-time.After(callbackTimeout):
+		return GattService{}, fmt.Errorf("Timed out retrieving GATT DB")
+	}
 }
 
 func (a *Adapter) ReadCharacteristic(
-	session Session, conn BleConnection, uuid CharacteristicUuid,
+	session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 ) (CharacteristicValue, error) {
-	rec := C.utilsFindCharRec(uuid.cUuid(), C.uint8_t(len(uuid.Bytes)))
+	rec := C.findCharacteristic(
+		db.ptr, C.uint32_t(db.noSvc), uuid.cUuid(), C.uint8_t(len(uuid.Bytes)),
+	)
 	if rec == nil {
 		return CharacteristicValue{}, fmt.Errorf("Characteristic %v not found\n", uuid)
 	}
@@ -241,23 +274,31 @@ func (a *Adapter) ReadCharacteristic(
 }
 
 func (a *Adapter) WriteCharacteristicWithoutResponse(
-	session Session, conn BleConnection, uuid CharacteristicUuid, value CharacteristicValueKind,
+	session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
+	value CharacteristicValueKind,
 ) error {
-	_, err := a.writeCharacteristic(session, conn, uuid, value, C.ACEBT_BLE_WRITE_TYPE_RESP_NO)
+	_, err := a.writeCharacteristic(
+		session, conn, db, uuid, value, C.ACEBT_BLE_WRITE_TYPE_RESP_NO,
+	)
 	return err
 }
 
 func (a *Adapter) WriteCharacteristicWithResponse(
-	session Session, conn BleConnection, uuid CharacteristicUuid, value CharacteristicValueKind,
+	session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
+	value CharacteristicValueKind,
 ) (CharacteristicValue, error) {
-	return a.writeCharacteristic(session, conn, uuid, value, C.ACEBT_BLE_WRITE_TYPE_RESP_REQUIRED)
+	return a.writeCharacteristic(
+		session, conn, db, uuid, value, C.ACEBT_BLE_WRITE_TYPE_RESP_REQUIRED,
+	)
 }
 
 func (a *Adapter) writeCharacteristic(
-	session Session, conn BleConnection, uuid CharacteristicUuid, value CharacteristicValueKind,
-	responseRequired C.responseType_t,
+	session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
+	value CharacteristicValueKind, responseRequired C.responseType_t,
 ) (CharacteristicValue, error) {
-	rec := C.utilsFindCharRec(uuid.cUuid(), C.uint8_t(len(uuid.Bytes)))
+	rec := C.findCharacteristic(
+		db.ptr, C.uint32_t(db.noSvc), uuid.cUuid(), C.uint8_t(len(uuid.Bytes)),
+	)
 	if rec == nil {
 		return CharacteristicValue{}, fmt.Errorf("Characteristic %v not found\n", uuid)
 	}
@@ -315,9 +356,11 @@ func (a *Adapter) writeCharacteristic(
 }
 
 func (a *Adapter) NotifyCharacteristic(
-	session Session, conn BleConnection, uuid CharacteristicUuid,
+	session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 ) (*Notification, error) {
-	rec := C.utilsFindCharRec(uuid.cUuid(), C.uint8_t(len(uuid.Bytes)))
+	rec := C.findCharacteristic(
+		db.ptr, C.uint32_t(db.noSvc), uuid.cUuid(), C.uint8_t(len(uuid.Bytes)),
+	)
 	if rec == nil {
 		return &Notification{}, fmt.Errorf("Characteristic %v not found\n", uuid)
 	}

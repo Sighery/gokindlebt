@@ -2,6 +2,7 @@ package gokindlebt
 
 /*
 #include <kindlebt/kindlebt.h>
+#include "setup.h"
 */
 import "C"
 
@@ -58,20 +59,61 @@ type Session struct {
 	ptr *C.sessionHandle
 }
 
+func NewSession() (Session, error) {
+	ptr := C.newSessionHandle()
+	if ptr == nil {
+		return Session{}, fmt.Errorf("Failed to allocate session struct")
+	}
+	return Session{ptr: &ptr}, nil
+}
+
 func (session Session) String() string {
 	return fmt.Sprintf("%#x", uintptr(unsafe.Pointer(*session.ptr)))
+}
+
+func (session Session) Close() {
+	// Seems like closeSession will free the memory?
+	session.ptr = nil
 }
 
 type BleConnection struct {
 	ptr *C.bleConnHandle
 }
 
+func NewBleConnection() (BleConnection, error) {
+	ptr := C.newBleConnHandle()
+	if ptr == nil {
+		return BleConnection{}, fmt.Errorf("Failed to allocate ble connection struct")
+	}
+	return BleConnection{ptr: &ptr}, nil
+}
+
 func (conn BleConnection) String() string {
 	return fmt.Sprintf("%#x", uintptr(unsafe.Pointer(*conn.ptr)))
 }
 
+func (conn BleConnection) Close() {
+	// Seems like bleDisconnect will free the memory?
+	conn.ptr = nil
+}
+
 type GattService struct {
-	ptr *C.bleGattsService_t
+	ptr   *C.bleGattsService_t
+	noSvc uint
+}
+
+func NewGattService() (GattService, error) {
+	ptr := C.newBleGattsService()
+	if ptr == nil {
+		return GattService{}, fmt.Errorf("Failed to allocate gatt db struct")
+	}
+	return GattService{ptr: ptr, noSvc: 0}, nil
+}
+
+func (service GattService) Close() {
+	C.free(unsafe.Pointer(service.ptr))
+	service.ptr = nil
+	service.noSvc = 0
 }
 
 type Notification struct {
