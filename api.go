@@ -7,7 +7,6 @@ package gokindlebt
 #include <kindlebt/kindlebt_application.h>
 
 #include "callbacks.h"
-#include "setup.h"
 #include "utils.h"
 */
 import "C"
@@ -37,6 +36,7 @@ type api interface {
 	DisconnectBle(conn BleConnection) error
 	DiscoverServices(session Session, conn BleConnection) error
 	RetrieveGattDatabase(conn BleConnection) (GattService, error)
+	CleanupGattDatabase(service GattService) error
 	ReadCharacteristic(
 		session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 	) error
@@ -69,7 +69,7 @@ func (a *Adapter) GetRadioState() (RadioState, error) {
 	var state C.state_t
 	status := C.getRadioState(&state)
 	if status != C.ACE_STATUS_OK {
-		return StateEnabled, fmt.Errorf("Couldn't fetch radio state, error: %d\n", status)
+		return StateEnabled, fmt.Errorf("Couldn't fetch radio state, error: %d", status)
 	}
 	return RadioState(state), nil
 }
@@ -77,7 +77,7 @@ func (a *Adapter) GetRadioState() (RadioState, error) {
 func (a *Adapter) EnableRadio(session Session) error {
 	status := C.enableRadio(*session.ptr)
 	if status != C.ACE_STATUS_OK {
-		return fmt.Errorf("Couldn't enable radio, error: %d\n", status)
+		return fmt.Errorf("Couldn't enable radio, error: %d", status)
 	}
 	return nil
 }
@@ -85,32 +85,27 @@ func (a *Adapter) EnableRadio(session Session) error {
 func (a *Adapter) DisableRadio(session Session) error {
 	status := C.disableRadio(*session.ptr)
 	if status != C.ACE_STATUS_OK {
-		return fmt.Errorf("Couldn't disable radio, error: %d\n", status)
+		return fmt.Errorf("Couldn't disable radio, error: %d", status)
 	}
 	return nil
 }
 
 func (a *Adapter) OpenSession(sessionType SessionType) (Session, error) {
-	session, err := NewSession()
-	if err != nil {
-		return Session{}, err
-	}
+	var session C.sessionHandle
 
-	status := C.openSession((C.sessionType_t)(sessionType), session.ptr)
+	status := C.openSession((C.sessionType_t)(sessionType), &session)
 	if status != C.ACE_STATUS_OK {
-		return Session{}, fmt.Errorf("Couldn't open a session, error: %d\n", status)
+		return Session{}, fmt.Errorf("Couldn't open a session, error: %d", status)
 	}
 
-	return session, nil
+	return Session{ptr: &session}, nil
 }
 
 func (a *Adapter) CloseSession(session Session) error {
 	status := C.closeSession(*session.ptr)
 	if status != C.ACE_STATUS_OK {
-		return fmt.Errorf("Couldn't close session, error: %d\n", status)
+		return fmt.Errorf("Couldn't close session, error: %d", status)
 	}
-
-	session.Close()
 
 	return nil
 }
@@ -118,7 +113,7 @@ func (a *Adapter) CloseSession(session Session) error {
 func (a *Adapter) RegisterBle(session Session) error {
 	status := C.bleRegister(*session.ptr)
 	if status != C.ACE_STATUS_OK {
-		return fmt.Errorf("Couldn't register for BLE use, error: %d\n", status)
+		return fmt.Errorf("Couldn't register for BLE use, error: %d", status)
 	}
 
 	return nil
@@ -127,7 +122,7 @@ func (a *Adapter) RegisterBle(session Session) error {
 func (a *Adapter) DeregisterBle(session Session) error {
 	status := C.bleDeregister(*session.ptr)
 	if status != C.ACE_STATUS_OK {
-		return fmt.Errorf("Couldn't deregister from BLE use, error %d\n", status)
+		return fmt.Errorf("Couldn't deregister from BLE use, error %d", status)
 	}
 
 	return nil
@@ -138,7 +133,7 @@ func (a *Adapter) RegisterGattClient(session Session) error {
 
 	status := C.bleRegisterGattClient(*session.ptr, &C.application_gatt_client_callbacks)
 	if status != C.ACE_STATUS_OK {
-		return fmt.Errorf("Couldn't register for GATT Client use, error %d\n", status)
+		return fmt.Errorf("Couldn't register for GATT Client use, error %d", status)
 	}
 
 	return nil
@@ -147,7 +142,7 @@ func (a *Adapter) RegisterGattClient(session Session) error {
 func (a *Adapter) DeregisterGattClient(session Session) error {
 	status := C.bleDeregisterGattClient(*session.ptr)
 	if status != C.ACE_STATUS_OK {
-		return fmt.Errorf("Couldn't deregister from GATT Client use, error %d\n", status)
+		return fmt.Errorf("Couldn't deregister from GATT Client use, error %d", status)
 	}
 
 	return nil
@@ -156,27 +151,24 @@ func (a *Adapter) DeregisterGattClient(session Session) error {
 func (a *Adapter) ConnectBle(
 	session Session, addr Address, param ConnParameter, role ConnRole, priority ConnPriority,
 ) (BleConnection, error) {
-	conn, err := NewBleConnection()
-	if err != nil {
-		return BleConnection{}, err
-	}
+	var connPtr C.bleConnHandle
 
 	cAddr := addr.cAddr()
 
 	status := C.bleConnect(
-		*session.ptr, conn.ptr, cAddr,
+		*session.ptr, &connPtr, cAddr,
 		(C.bleConnParam_t)(param),
 		(C.bleConnRole_t)(role),
 		(C.bleConnPriority_t)(priority),
 	)
 	if status != C.ACE_STATUS_OK {
 		return BleConnection{}, fmt.Errorf(
-			"Failed to connect to BLE device %s, error %d\n", addr, status,
+			"Failed to connect to BLE device %s, error %d", addr, status,
 		)
 	}
 
+	conn := BleConnection{ptr: &connPtr}
 	connRegistry[*conn.ptr] = &conn
-
 	return conn, nil
 }
 
@@ -187,10 +179,8 @@ func (a *Adapter) ConnectBleSimple(session Session, addr Address) (BleConnection
 func (a *Adapter) DisconnectBle(conn BleConnection) error {
 	status := C.bleDisconnect(*conn.ptr)
 	if status != C.ACE_STATUS_OK {
-		return fmt.Errorf("Failed to disconnect from BLE device, error %d\n", status)
+		return fmt.Errorf("Failed to disconnect from BLE device, error %d", status)
 	}
-
-	conn.Close()
 
 	return nil
 }
@@ -198,51 +188,42 @@ func (a *Adapter) DisconnectBle(conn BleConnection) error {
 func (a *Adapter) DiscoverServices(session Session, conn BleConnection) error {
 	status := C.bleDiscoverAllServices(*session.ptr, *conn.ptr)
 	if status != C.ACE_STATUS_OK {
-		return fmt.Errorf("Failed to discover services from BLE device, error %d\n", status)
+		return fmt.Errorf("Failed to discover services from BLE device, error %d", status)
 	}
 
 	return nil
 }
 
 func (a *Adapter) RetrieveGattDatabase(conn BleConnection) (GattService, error) {
-	service, err := NewGattService()
-	if err != nil {
-		return GattService{}, err
-	}
+	var outPtr *C.bleGattsService_t
+	var serviceCount C.uint32_t
 
-	ch := make(chan getDbCallback, 1)
-	pendingDbs.Store(*conn.ptr, ch)
-
-	status := C.bleGetDatabase(*conn.ptr, service.ptr)
+	status := C.bleGetDatabase(*conn.ptr, &outPtr, &serviceCount)
 	if status != C.ACE_STATUS_OK {
-		pendingDbs.Delete(*conn.ptr)
 		return GattService{}, fmt.Errorf(
-			"Failed to retrieve GATT database from BLE device, error %d\n", status,
+			"Failed to retrieve GATT database from BLE device, error %d", status,
 		)
 	}
 
-	select {
-	case res := <-ch:
-		status = C.bleCloneGattService(&service.ptr, res.service, C.int(int(res.noSvc)))
-		if status != C.ACE_STATUS_OK {
-			return GattService{}, fmt.Errorf("Failed to copy the GATT DB, error: %d", status)
-		}
-		service.noSvc = uint(res.noSvc)
+	return GattService{ptr: outPtr, noSvc: uint(serviceCount)}, nil
+}
 
-		return service, nil
-	case <-time.After(callbackTimeout):
-		return GattService{}, fmt.Errorf("Timed out retrieving GATT DB")
+func (a *Adapter) CleanupGattDatabase(service GattService) error {
+	status := C.bleCleanupGattService(service.ptr, C.int(service.noSvc))
+	if status != C.ACE_STATUS_OK {
+		return fmt.Errorf("Error cleaning up GATT DB: %d", status)
 	}
+	return nil
 }
 
 func (a *Adapter) ReadCharacteristic(
 	session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 ) (CharacteristicValue, error) {
-	rec := C.findCharacteristic(
+	rec := C.utilsFindCharRec(
 		db.ptr, C.uint32_t(db.noSvc), uuid.cUuid(), C.uint8_t(len(uuid.Bytes)),
 	)
 	if rec == nil {
-		return CharacteristicValue{}, fmt.Errorf("Characteristic %v not found\n", uuid)
+		return CharacteristicValue{}, fmt.Errorf("Characteristic %v not found", uuid)
 	}
 
 	ch := make(chan readCharacteristicCallback, 1)
@@ -252,7 +233,7 @@ func (a *Adapter) ReadCharacteristic(
 	if status != C.ACE_STATUS_OK {
 		pendingReads.Delete(*conn.ptr)
 		return CharacteristicValue{}, fmt.Errorf(
-			"Couldn't read Characteristic %v, error: %d\n", uuid, status,
+			"Couldn't read Characteristic %v, error: %d", uuid, status,
 		)
 	}
 
@@ -260,7 +241,7 @@ func (a *Adapter) ReadCharacteristic(
 	case res := <-ch:
 		if res.status != C.ACE_STATUS_OK {
 			return CharacteristicValue{}, fmt.Errorf(
-				"Read Characteristic %v failed, error: %d\n", uuid, res.status,
+				"Read Characteristic %v failed, error: %d", uuid, res.status,
 			)
 		}
 
@@ -268,7 +249,7 @@ func (a *Adapter) ReadCharacteristic(
 
 	case <-time.After(callbackTimeout):
 		return CharacteristicValue{}, fmt.Errorf(
-			"Timed out reading Characteristic %v\n", uuid,
+			"Timed out reading Characteristic %v", uuid,
 		)
 	}
 }
@@ -296,11 +277,11 @@ func (a *Adapter) writeCharacteristic(
 	session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 	value CharacteristicValueKind, responseRequired C.responseType_t,
 ) (CharacteristicValue, error) {
-	rec := C.findCharacteristic(
+	rec := C.utilsFindCharRec(
 		db.ptr, C.uint32_t(db.noSvc), uuid.cUuid(), C.uint8_t(len(uuid.Bytes)),
 	)
 	if rec == nil {
-		return CharacteristicValue{}, fmt.Errorf("Characteristic %v not found\n", uuid)
+		return CharacteristicValue{}, fmt.Errorf("Characteristic %v not found", uuid)
 	}
 
 	ch := make(chan writeCharacteristicCallback, 1)
@@ -330,7 +311,7 @@ func (a *Adapter) writeCharacteristic(
 	if status != C.ACE_STATUS_OK {
 		pendingReads.Delete(*conn.ptr)
 		return CharacteristicValue{}, fmt.Errorf(
-			"Couldn't write Characteristic %v, error: %d\n", uuid, status,
+			"Couldn't write Characteristic %v, error: %d", uuid, status,
 		)
 	}
 
@@ -338,7 +319,7 @@ func (a *Adapter) writeCharacteristic(
 	case res := <-ch:
 		if res.status != C.ACE_STATUS_OK {
 			return CharacteristicValue{}, fmt.Errorf(
-				"Write Characteristic %v failed, error: %d\n", uuid, res.status,
+				"Write Characteristic %v failed, error: %d", uuid, res.status,
 			)
 		}
 
@@ -350,7 +331,7 @@ func (a *Adapter) writeCharacteristic(
 
 	case <-time.After(callbackTimeout):
 		return CharacteristicValue{}, fmt.Errorf(
-			"Timed out writing Characteristic %v\n", uuid,
+			"Timed out writing Characteristic %v", uuid,
 		)
 	}
 }
@@ -358,11 +339,11 @@ func (a *Adapter) writeCharacteristic(
 func (a *Adapter) NotifyCharacteristic(
 	session Session, conn BleConnection, db GattService, uuid CharacteristicUuid,
 ) (*Notification, error) {
-	rec := C.findCharacteristic(
+	rec := C.utilsFindCharRec(
 		db.ptr, C.uint32_t(db.noSvc), uuid.cUuid(), C.uint8_t(len(uuid.Bytes)),
 	)
 	if rec == nil {
-		return &Notification{}, fmt.Errorf("Characteristic %v not found\n", uuid)
+		return &Notification{}, fmt.Errorf("Characteristic %v not found", uuid)
 	}
 
 	callbackCh := make(chan notifyCharacteristicCallback, 20)
@@ -389,7 +370,7 @@ func (a *Adapter) NotifyCharacteristic(
 		pendingNotifications.Delete(*conn.ptr)
 		close(generatorDone)
 		return &Notification{}, fmt.Errorf(
-			"Couldn't enable notifications on Characteristic %v\n", uuid,
+			"Couldn't enable notifications on Characteristic %v", uuid,
 		)
 	}
 
@@ -397,7 +378,7 @@ func (a *Adapter) NotifyCharacteristic(
 		status := C.bleSetNotification(*session.ptr, *conn.ptr, rec.value, C.bool(false))
 		if status != C.ACE_STATUS_OK {
 			return fmt.Errorf(
-				"Couldn't disable notifications on Characteristic %v\n", uuid,
+				"Couldn't disable notifications on Characteristic %v", uuid,
 			)
 		}
 		pendingNotifications.Delete(*conn.ptr)

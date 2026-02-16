@@ -2,7 +2,8 @@ package gokindlebt
 
 /*
 #include <kindlebt/kindlebt.h>
-#include "setup.h"
+#include <kindlebt/kindlebt_log.h>
+#include "utils.h"
 */
 import "C"
 
@@ -59,42 +60,16 @@ type Session struct {
 	ptr *C.sessionHandle
 }
 
-func NewSession() (Session, error) {
-	ptr := C.newSessionHandle()
-	if ptr == nil {
-		return Session{}, fmt.Errorf("Failed to allocate session struct")
-	}
-	return Session{ptr: &ptr}, nil
-}
-
 func (session Session) String() string {
 	return fmt.Sprintf("%#x", uintptr(unsafe.Pointer(*session.ptr)))
-}
-
-func (session Session) Close() {
-	// Seems like closeSession will free the memory?
-	session.ptr = nil
 }
 
 type BleConnection struct {
 	ptr *C.bleConnHandle
 }
 
-func NewBleConnection() (BleConnection, error) {
-	ptr := C.newBleConnHandle()
-	if ptr == nil {
-		return BleConnection{}, fmt.Errorf("Failed to allocate ble connection struct")
-	}
-	return BleConnection{ptr: &ptr}, nil
-}
-
 func (conn BleConnection) String() string {
 	return fmt.Sprintf("%#x", uintptr(unsafe.Pointer(*conn.ptr)))
-}
-
-func (conn BleConnection) Close() {
-	// Seems like bleDisconnect will free the memory?
-	conn.ptr = nil
 }
 
 type GattService struct {
@@ -102,18 +77,35 @@ type GattService struct {
 	noSvc uint
 }
 
-func NewGattService() (GattService, error) {
-	ptr := C.newBleGattsService()
-	if ptr == nil {
-		return GattService{}, fmt.Errorf("Failed to allocate gatt db struct")
-	}
-	return GattService{ptr: ptr, noSvc: 0}, nil
-}
+func (service GattService) DumpServices() string {
+	var size C.size_t = 1024
+	var offset C.size_t = 0
 
-func (service GattService) Close() {
-	C.free(unsafe.Pointer(service.ptr))
-	service.ptr = nil
-	service.noSvc = 0
+	logBuff := (*C.char)(C.malloc(size))
+	if logBuff == nil {
+		fmt.Printf("Error allocating print buffer for GattService")
+		return ""
+	}
+
+	svcSlice := unsafe.Slice(service.ptr, service.noSvc)
+
+	for i := C.uint32_t(0); i < C.uint32_t(service.noSvc); i++ {
+		fmtStr := C.CString("GATT Database index :%u %p\n")
+
+		logBuff = C.append_to_buffer_wrapper(
+			logBuff, &size, &offset, fmtStr, i, unsafe.Pointer(&svcSlice[i]),
+		)
+
+		C.free(unsafe.Pointer(fmtStr))
+
+		logBuff = C.utilsDumpServer(
+			&svcSlice[i], logBuff, &size, &offset,
+		)
+	}
+
+	goBytes := C.GoBytes(unsafe.Pointer(logBuff), C.int(offset))
+	C.free(unsafe.Pointer(logBuff))
+	return string(goBytes)
 }
 
 type Notification struct {
